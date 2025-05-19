@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lambda stack for persona chatbot - Hybrid model with Step Function
+
+Parameters:
+  S3Bucket:
+      Type: String
+      Description: S3 bucket name where Lambda zips are stored
+  S3Prefix:
+    Type: String
+    Description: S3 prefix/folder path where Lambda zips are stored (no trailing slash)
+    
+Resources:
+  ValidatorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: persona-validator-lambda
+      Handler: ValidatorLambda.handler
+      Role: !Sub '{{resolve:ssm:/persona/iam/ValidatorLambdaRoleArn}}'
+      Runtime: nodejs18.x
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLENAME: !Sub '{{resolve:ssm:/persona/db/PersonaSessionTableName}}'
+          PERSONA_STEPFUNCTION_ARN: !Sub '{{resolve:ssm:/persona/stepfunction/PersonaOrchestrationArn}}'
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Sub "${S3Prefix}/ValidatorLambda.zip"
+
+  SessionEndLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: persona-session-end-lambda
+      Handler: SessionEndLambda.handler
+      Role: !Sub '{{resolve:ssm:/persona/iam/SessionEndLambdaRoleArn}}'
+      Runtime: nodejs18.x
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLENAME: !Sub '{{resolve:ssm:/persona/db/PersonaSessionTableName}}'
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Sub "${S3Prefix}/SessionEndLambda.zip"
+
+  ValidatorLambdaParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /persona/lambda/ValidatorArn
+      Type: String
+      Value: !GetAtt ValidatorLambda.Arn
+
+  SessionEndLambdaParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /persona/lambda/SessionEndArn
+      Type: String
+      Value: !GetAtt SessionEndLambda.Arn

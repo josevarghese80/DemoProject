@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Production-ready API Gateway for hybrid persona chatbot — CORS enabled, deployed to /dev
+
+Parameters:
+  
+  # SessionEndLambdaArn:
+  #   Type: AWS::SSM::Parameter::Value<String>
+  #   Default: /persona/lambda/SessionEndArn
+
+  # PersonaOrchestrationArn:
+  #   Type: AWS::SSM::Parameter::Value<String>
+  #   Description: StepFunction ARN
+  #   Default: /persona/stepfunction/PersonaOrchestrationArn
+  # TableName:
+  #   Type: AWS::SSM::Parameter::Value<String>
+  #   Description: DynamoDB table to store session and chat history
+  #   Default: /persona/db/PersonaSessionTableName 
+  # LexBotID:
+  #   Type: AWS::SSM::Parameter::Value<String>
+  #   Default: /persona/lex/LexBotID
+  # ChatHandlerLambdaRoleArn:
+  #   Type: AWS::SSM::Parameter::Value<String>
+  #   Default: /persona/iam/ChatHandlerLambdaRoleArn
+  # LexBotAlias:
+  #   Type: AWS::SSM::Parameter::Value<String>
+  #   Default: /persona/lex/LexBotAlias
+  S3Bucket:
+      Type: String
+      Description: S3 bucket name where Lambda zips are stored
+  S3Prefix:
+    Type: String
+    Description: S3 prefix/folder path where Lambda zips are stored (no trailing slash)
+Resources:
+  ChatHandlerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: persona-chat-handler-lambda
+      Handler: ChatHandlerLambda.handler
+      Role: !Sub '{{resolve:ssm:/persona/iam/ChatHandlerLambdaRoleArn}}'
+      Runtime: nodejs18.x
+      Timeout: 10
+      Environment:
+        Variables:
+          PERSONA_STEPFUNCTION_ARN: !Sub '{{resolve:ssm:/persona/stepfunction/PersonaOrchestrationArn}}'
+          TABLENAME: !Sub '{{resolve:ssm:/persona/db/PersonaSessionTableName}}'
+          LEXBOT_ID: !Sub '{{resolve:ssm:/persona/lex/LexBotID}}'
+          LEXBOT_ALIAS_ID: !Sub '{{resolve:ssm:/persona/lex/LexBotAlias}}'
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Sub "${S3Prefix}/ChatHandlerLambda.zip"
+  
+  ChatHandlerLambdaParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /persona/lambda/ChatHandlerArn
+      Type: String
+      Value: !GetAtt ChatHandlerLambda.Arn
+
+  PersonaApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: PersonaApi
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  PersonaResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt PersonaApi.RootResourceId
+      PathPart: persona
+      RestApiId: !Ref PersonaApi
+
+  EndResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt PersonaApi.RootResourceId
+      PathPart: end
+      RestApiId: !Ref PersonaApi
+
+  PersonaPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref PersonaResource
+      RestApiId: !Ref PersonaApi
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChatHandlerLambda.Arn}/invocations
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+      RequestParameters: {}
+
+  EndPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ResourceId: !Ref EndResource
+      RestApiId: !Ref PersonaApi
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/{{resolve:ssm:/persona/lambda/SessionEndArn}}/invocations
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+      RequestParameters: {}
+
+  PersonaOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref PersonaResource
+      RestApiId: !Ref PersonaApi
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  EndOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref EndResource
+      RestApiId: !Ref PersonaApi
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  DevDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PersonaPostMethod
+      - EndPostMethod
+      - PersonaOptionsMethod
+      - EndOptionsMethod
+    Properties:
+      RestApiId: !Ref PersonaApi
+      StageName: dev
+
+  ChatHandlerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ChatHandlerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PersonaApi}/*/POST/persona
+
+  SessionEndInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Sub '{{resolve:ssm:/persona/lambda/SessionEndArn}}'
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PersonaApi}/*/POST/end
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the API Gateway (dev stage)
+    Value: !Sub "https://${PersonaApi}.execute-api.${AWS::Region}.amazonaws.com/dev"

@@ -1,0 +1,135 @@
+name: Deploy React App and Infrastructure
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  REACT_APP_DIR: MyPersonaGen
+  DEPLOYMENT_PROPS: deployment.properties
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Dependencies
+        run: |
+          cd $REACT_APP_DIR
+          npm ci
+
+      - name: Build React App
+        run: |
+          cd $REACT_APP_DIR
+          echo "Current directory: $(pwd)"
+          npm run build
+
+      - name: Load Deployment Properties
+        id: load_props
+        run: |
+          source $DEPLOYMENT_PROPS
+          echo "react_bucket=$REACT_S3_BUCKET" >> $GITHUB_OUTPUT
+          echo "lambda_bucket=$LAMBDA_S3_BUCKET" >> $GITHUB_OUTPUT
+          echo "lambdafolder=$LAMBDA_FOLDER" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+          echo "builddir=$BUILD_DIR" >> $GITHUB_OUTPUT
+
+      - name: Export Deployment Parameters to Environment
+        run: |
+          grep -v '^#' $DEPLOYMENT_PROPS | grep '=' | while IFS='=' read -r key value
+          do
+            key=$(echo "$key" | xargs)
+            value=$(echo "$value" | xargs)
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+
+      # - name: Export Deployment Parameters to Environment
+      #   run: |
+      #     while IFS='=' read -r key value
+      #     do
+      #       echo "$key=$value" >> $GITHUB_ENV
+      #     done < $DEPLOYMENT_PROPS
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ steps.load_props.outputs.region }}
+
+      - name: Sync Build Output to S3 Root
+        run: |
+          echo "Deploying React app to s3://${{ steps.load_props.outputs.react_bucket }}/"
+          aws s3 sync ${{ env.REACT_APP_DIR }}/${{ steps.load_props.outputs.builddir }} s3://${{ steps.load_props.outputs.react_bucket }}/ --delete
+
+      - name: Package and Upload Lambda Functions
+        run: |
+          echo "Zipping and uploading Lambda functions..."
+          cd backend/lambda
+          for file in *.js; do
+            name=$(basename "$file" .js)
+            echo "Zipping $file → ${name}.zip"
+            zip "${name}.zip" "$file"
+            aws s3 cp "${name}.zip" s3://${{ steps.load_props.outputs.lambda_bucket }}/${{ steps.load_props.outputs.lambdafolder }}/
+          done
+
+      - name: Deploy CloudFormation Stacks
+        run: |
+          echo "Deploying CloudFormation stacks..."
+          cd backend/CloudFormationTemplates
+
+          COMMON_FLAGS="--capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM --region ${{ steps.load_props.outputs.region }}"
+
+          echo "Deploying: iam-stack.yaml"
+          aws cloudformation deploy --stack-name iam-stack --template-file iam-stack.yaml $COMMON_FLAGS
+
+          echo "Deploying: ssm-bedrock-config.yaml"
+          aws cloudformation deploy \
+            --stack-name ssm-bedrock-config \
+            --template-file ssm-bedrock-config.yaml \
+            --parameter-overrides \
+              GuardrailId=$GUARDRAIL_ID \
+              GuardrailVersion=$GUARDRAIL_VERSION \
+              LLMModelId=$LLM_MODEL_ID \
+            $COMMON_FLAGS
+
+          echo "Deploying: persona-dynamodb-stack.yaml"
+          aws cloudformation deploy --stack-name persona-dynamodb-stack --template-file persona-dynamodb-stack.yaml $COMMON_FLAGS
+
+          echo "Deploying: stepfunction-stack.yaml"
+          aws cloudformation deploy \
+            --stack-name stepfunction-stack \
+            --template-file stepfunction-stack.yaml \
+            --parameter-overrides \
+              S3Bucket=$LAMBDA_S3_BUCKET \
+              S3Prefix=$LAMBDA_FOLDER \
+            $COMMON_FLAGS
+
+          echo "Deploying: lambda-stack.yaml"
+          aws cloudformation deploy \
+            --stack-name lambda-stack \
+            --template-file lambda-stack.yaml \
+            --parameter-overrides \
+              S3Bucket=$LAMBDA_S3_BUCKET \
+              S3Prefix=$LAMBDA_FOLDER \
+            $COMMON_FLAGS
+
+          echo "Deploying: lex-bot-stack.yaml"
+          aws cloudformation deploy --stack-name lex-bot-stack --template-file lex-bot-stack.yaml $COMMON_FLAGS
+
+          echo "Deploying: api-gateway-stack.yaml"
+          aws cloudformation deploy \
+            --stack-name api-gateway-stack \
+            --template-file api-gateway-stack.yaml \
+            --parameter-overrides \
+              S3Bucket=$LAMBDA_S3_BUCKET \
+              S3Prefix=$LAMBDA_FOLDER \
+            $COMMON_FLAGS
