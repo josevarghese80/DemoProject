@@ -47,9 +47,6 @@ You have two options to run the application
 
 # `Front End Web UI` 
 
-## Web URL
-
-https://d1080c9c9lj37d.cloudfront.net/
 
 ## Persona Assistant
 
