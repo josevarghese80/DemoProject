@@ -38,14 +38,12 @@ export default function ChatComponent() {
         const newCount = userQuestionCount + 1;
         setUserQuestionCount(newCount);
         // console.log(`API URL ${API_URL}`)
-        if (newCount >= 3) {
+        if (newCount >= 5) {
             // Stop after 4 user questions
             const finalMessage = {
                 sender: "bot",
                 text:
-                    `Looks like you're gearing up for a solid sales strategy.
-Let us help you equip your Sales Reps, boost conversions, and maximize ROI — all while growing your brand's influence.
-Visit https://google.com/ to learn more.`,
+                    `You have reached the max number of queries. This is a test demo.`,
                 timestamp: getTime(),
             };
 
